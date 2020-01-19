@@ -1,0 +1,523 @@
+---
+title: "C744 Data Mining Assessment"
+author: "Michiel Besseling"
+date: "12/20/2019"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+***
+
+###Abstract###
+
+The purpose of this report is to apply data mining techniques to assist a telecommunications company in finding patterns and trends in customer retention from the given data set of customer records.  The author will be discussing the selection of data mining software, exploring the distribution of individuals and variables in multidimensional vector space, selecting predictive models, and summarizing the findings. The ultimate goal will be to build a model to best predict whether a given client is likely to churn.  
+
+###*Section I:*  Tool Selection###
+
+This study will be done using R via R Studio.  I have chosen to use R for a number of reasons. R is free and available on Windows or Mac platforms.  R Studio is user friendly and has a number of additional features, such as R Markdown, which I am using to write this report.  R also has a wide variety of additional packages that can be used along with its base functions.  I will be employing many of these packages, such as dplyr, Tidyverse, FactomineR, ggplots2, and many more. One downside of R is that it cannot handle very large amounts of data (in the tens of millions +), but our data set is well within the capabilities of R.  
+
+To build a model to predict the churn rate of this particular company, I will first use multivariate correspondence analysis (MCA) and cluster analysis to describe the data set and find groups of commonly shared variables.  I will then build a few models to predict churn rate using logistic regression.  Finally I will analyze, compare, and possibly combine models to find the best performing model.
+
+###*Section II:*  Data Exploration and Preperation###
+The goal of the data preparation is to load the data, load additional packages required, address any missing or abhorrent values, rename variable levels if too long or inconsistent, reduce the number of levels of each variable if possible, and export a .xls file. 
+
+We begin by loading the data and calling packages.
+```{r}
+data = read.csv("~/Downloads/School/WGU/C 744 Data Mining/WA_Fn-UseC_-Telco-Customer-Churn.csv")
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(FactoMineR)
+library(factoextra)
+library(rpart)
+library(rpart.plot)
+library(MASS)
+library(caret)
+library(ROCR)
+library(DescTools)
+```
+I first like to use the `str()` function to examine the data set.
+```{r}
+str(data)
+```
+```{r}
+head(data)
+```
+There are 7,043 customer records with 21 variables. The response variable of interest is Churn, with "Yes" implying the customer has discontinued service with the company.  This is a binary categorical variable.  
+
+The remaining 20 variables are the independent variables.  To inspect the data, I first check whether each variable is correctly interpreted as a categorical or numerical variable.  Most of these variables are categorical (factor), with most of those with three levels. The senior citizen category, consisting of only 1's and 0's, should be changed from an integer to a factor for consistency. Other than that, there are three numerical independent variables and 17 categorical independent variables. It would be reasonable to assume a decent amount of collinearity within these independent variables. For example, a customer's TotalCharges value is likely to be strongly correlated with their tenure, and a customer is probably more likely to purchase OnlineBackup if they already have purchased OnlineSecurity.
+
+Now we look at the data, checking for NA's and possible inconsistencies.
+```{r}
+summary(data)
+```
+Fortunately, most of this data set looks relatively clean.  All of the summaries above seem acceptable except the NA's in the TotalCharges variable.  Let's examine these 11 particular observations.
+```{r}
+subset(data, is.na(TotalCharges)) 
+```
+All of the columns for these 11 observations, except the NA's, seem correctly filled out. The one column that they share in common is the tenure column, where all entries are zero.  It seems reasonable to assume that these are all new customers who have not yet paid their first bill.  Since the current minimum value for TotalCharges is 18.8 (far enough from zero), I will correct these observations by setting their TotalCharges entry to their MonthlyCharges, so it was as if these customers did pay their first bill. Then I run the `summary()` function (as we already did for the entire data set) to make sure that the NA's have been replaced and the minimum value has not changed.
+
+```{r}
+data$TotalCharges = ifelse(is.na(data$TotalCharges) == T, data$MonthlyCharges,
+                           data$TotalCharges)
+summary(data$TotalCharges)
+```
+Next I will rename the levels of SeniorCitizen column as 1 = Yes and 0 = No, then check the results.
+
+```{r}
+data$SeniorCitizen = as.factor(ifelse(data$SeniorCitizen == 0 ,"No","Yes"))
+table(data$SeniorCitizen)
+```
+Additionally, some of the plots I will use later on in this report use the names of each level of the categorical variables.  In order to make the plots look neater, it is helpful to use as short of names as possible to describe each level. Thus I will change some of the names of the levels. For example, OnlineSecurity has a "No internet service" level, which I will rename as "DNA"" for "does not apply."
+
+```{r}
+data$MultipleLines = as.factor(gsub("No phone service","DNA",data$MultipleLines))
+data$OnlineSecurity = as.factor(gsub("No internet service","DNA",data$OnlineSecurity))
+data$OnlineBackup = as.factor(gsub("No internet service","DNA",data$OnlineBackup))
+data$DeviceProtection = as.factor(gsub("No internet service","DNA",data$DeviceProtection))
+data$TechSupport = as.factor(gsub("No internet service","DNA",data$TechSupport))
+data$StreamingTV   = as.factor(gsub("No internet service","DNA",data$StreamingTV))
+data$StreamingMovies   = as.factor(gsub("No internet service","DNA",data$StreamingMovies))
+```
+Let's also change the payment levels names as well as the contract to shorten the level names.  The new names should be easy to decipher.  Note that I changed my coding from the base function `gsub()` to the `mapvalues()` function found in the `dplyr` package.  This is a good illustration of how packages in R are more user friendly than the base functions.  
+```{r}
+data$PaymentMethod = mapvalues(data$PaymentMethod, c("Bank transfer (automatic)", 
+        "Credit card (automatic)", "Electronic check", "Mailed check"), c("Transfer","CC","ECheck", "Mail"))
+data$Contract = mapvalues(data$Contract, c("Month-to-month", "One year",  "Two year" ), 
+                          c("MtM", "1year", "2year"))
+data$InternetService = mapvalues(data$InternetService,"Fiber optic", "Fiber" )
+levels(data$PaymentMethod)
+levels(data$Contract)
+levels(data$InternetService)
+```
+This should be enough to have a clean and workable data set.  I will rename it as churn (not to be confused with Churn, the target variable), while omitting the customer ID numbers.  Let's see how it looks.
+
+```{r}
+churn = data[ ,-1]
+str(churn)
+head(churn)
+```
+Lastly we export it as an .xls file.  Typically, I would use the `xlsx` package for this purpose, but there seems to be a problem with R Studio finding the correct Javascript files for this package.  I made the mistake of upgrading my operating system on my Mac to OS Catalina, and there have been many issues with software finding correct files paths.  So I will export as a .csv file, then use Microsoft Excel to convert it to .xlsx format outside of R.
+```{r}
+write.csv(churn, "churn_cleaned.csv")
+```
+
+###*Section III:*  Data Analysis###
+
+####Univariate Distributions####
+Now we begin to look at our data.  Since Churn is our target variable, let's look at its distribution using `ggplot2`.
+```{r }
+p1 = ggplot(data=churn, aes(x=Churn)) +
+  geom_bar(fill = c("dodgerblue","red"), width = .5) 
+p1
+table(churn$Churn)
+table(churn$Churn)/sum(table(churn$Churn))
+```
+So we see that about 26.54% of the 7,043 customers did leave the company. This is an important value since we can now build our first model.  This model predicts that the churn rate of any randomly selected customer is 26.54%.  It is now my job to find models which can do a better job of predicting the churn rate.  We can then begin to understand the factors and the types of customers more likely to leave.  The goal is that the company can address the potential churning customers' concerns and find ways to better improve customer retention.
+
+```{r}
+phone = table(churn$PhoneService)
+internet = table(churn$InternetService)
+p2 = ggplot(data=churn, aes(x=InternetService)) +
+  geom_bar(fill = c("dodgerblue","green","red"), width = .5) 
+p2
+table(churn$InternetService)
+table(churn$InternetService)/sum(table(data$InternetService))
+p3 = ggplot(data=churn, aes(x=PhoneService)) +
+  geom_bar(fill = c("dodgerblue","red"), width = .5) 
+p3
+print(list("Phone Service",phone))
+phone/sum(phone)
+internet
+internet/sum(internet)
+```
+Over 90% of customers had phone service and 78.4% had some kind of internet service. 
+
+####Bivariate Distributions####
+Let's look at the conditional distribution of churn rate for each service.
+
+```{r}
+c1 = table(churn$PhoneService, churn$Churn)
+c2 = round(prop.table(c1,1)*100,1)
+c2
+barplot(t(c2), beside = T, main = "Churn Rate by Phone Serivce", col = 2:3, xlab = "Phone Service?", ylab = "% Churn by Phone Service")
+legend('topright',fill = 2:3, c("Churn_No","Churn_Yes"))
+```
+It appears that the churn rate is spread out evenly between the phone service.  
+```{r}
+c3 = table(churn$InternetService, churn$Churn)
+c4 = round(prop.table(c3,1)*100,1)
+c4
+barplot(t(c4), beside = T, main = "Churn Rate by Internet Serivce", col = 2:3, xlab = "Internet Service", ylab = "% Churn by Internet Service")
+legend('top',fill = 2:3, c("Churn_No","Churn_Yes"))
+```
+Now we see something suspicious. The fiber optic service appears to have a higher churn rate, 41.9% compared to the global 26.54% churn rate.  Also, those with no internet service (phone service only), only have a 7.4% churn rate.  DSL also has a lower churn rate than average at 19%.
+
+Let's have a look at the tenure of the customers and its relation to churn rate.
+```{r}
+hist(churn$tenure, main = "Tenure of all Customers", col = "blue", xlab = "months")
+boxplot(churn$tenure~churn$Churn, col = c("red", "blue"), ylab = "months", xlab = "Churn?")
+```
+It does appear that those who left the company tended to have lower tenure values.  
+
+####Testing and Training Data####
+In later steps I will be exploring some common features of customers and building models to predict the churn rate. First we will partition our data into 30% testing and 70% training data.
+
+```{r}
+set.seed(3.141592)
+s = sample(1:nrow(churn),size = round(.7*nrow(churn)))
+churn.train = churn[s,]
+churn.test = churn[-s,]
+```
+
+####MCA####
+Here we use multiple correspondence analysis (MCA) to examine the relationship between the individuals and the variables.  This technique uses linear algebra to reduce the number of dimensions of the data, which in this case is 20 dimensions.  MCA can find clouds of individuals and clouds of variables using the notion of similarity.  To individuals are similar if they share many characteristics, which in higher dimensional vector space would imply that the distance between the two points is relatively small. This makes the factor plots very useful and easy to interpret.  On an MCA plot, if two individuals are close to one another, they have many features in common along the given two principle components.  If two variables are close to one another, they share many of the same individuals.  Additionally, the further a point is from the origin, the more leverage that individual or variable has on constructing that principle components.  Conversely, points near the origin have little effect on the components, and we can interpret these points on having little effect on the construction of the principle components. So we look for clusters of both individuals and variables to interpret.
+
+MCA may not be the most popular choice to examine the relationship between variables in this case, but I decided to experiment with it in this situation and I found the results consistent with my findings in decision trees (the results of which are not included in this report).  MCA requires all variables to be categorical for the construction of the principle components; however quantitative variables can be represented as well. Variables can be set as active variables, which will be used to construct the principle components, or supplemental variables, which are not used in the construction of the axes.  I have also set demographic data, such as Gender, Partner, and SeniorCitizen as qualitative supplemental variables.  Other than using active categorical variables, there are no other assumptions necessary to perform MCA.  
+
+I will use the `FactomineR` and `factoextra` package and its `MCA` function. 
+```{r}
+churn.mca = MCA(churn, quali.sup = c(1,2,3,4,20), quanti.sup = c(5,18,19), ncp=20)
+```
+We should first analyze the eigenvalues of each of the principle components first before interpreting the results of these plots to ensure the dimensions are significant.  However the FactomineR package automatically displays these four plots, so let's discuss them first.
+
+The first three plots show the axes of the first two principle components, which together represents $32.71 + 11.28 = 43.99$% of the total inertia of all the principle components (the first component takes as high 19.1% of the inertia in this case if all dimensions are independent at a 95% confidence level).
+
+The first plot above shows the position of each factor and level along the axes of the first two principle components (named Dim 1 and Dim 2 on the plots).  The active variables are shown in red while the green variables represent the supplemental variables. Since this plot is so cluttered, we will zoom in and discuss it in more detail in the next chunk of code.  
+
+The second graph shows the position of individuals, which separated into at least two two distinct and well separated clouds.  As we will see later, the cloud on the right side of the axis consists of the individuals with no internet service.
+
+The third plot shows each of the variables (which in this map include all of the levels of each variable) and their position on the axes of the first two principle components. We see a cluster on the right consisting InternetService, StreamingMovies, etc.  I will call the variables such as OnlineBackup, StreamingMovies, etc as additional features. The closeness of these variables indicates that they are strongly related.  This should make sense since one's level of these additional features depends on whether they have Internet or not.  More clearly, if a customer does not purchase InternetService they will also not have StreamingMovies, OnlineBackup, or any of these features.  Because of the distance from the origin, it appears that the choice of InternetService may have the most influence on the model.
+
+The fourth plot shows the representation of the supplemental, in this case quantitative, variables.  The larger the radius, the better the representation of the variable is.  All three variables are reasonably represented on the axes.
+
+We can interpret the first principle component as predominantly characterized by internet usage and additional services for internet, such as TechSupport.  The further along the horizontal axis, the more leverage the variable has along the axis of that principle component.  Thus we see that the second principle component is characterized by tenure and its correlated values.  The closer two variables are together in this plot, the stronger the collinearity.  Additionally, the closer variables are to the origin, the weaker their leverage.  So PaperlessBilling, SeniorCitizen, and PhoneService have little influence, at least in the first two components.  
+
+Let us know clean up the factor map.  We see where our target variables lie on the plot as well.
+```{r}
+plot(churn.mca, cex = .65, invisible = "ind", autoLab = "y")
+```
+The Churn_Yes factor lies in the third quadrant at a healthy distance from the origin.  The Churn_No factor lies in the first quadrant relatively close to the origin.  Let us now zoom in on the cloud of variables and individuals.  We first examine the large cloud of individuals on the right hand side.
+```{r}
+plot(churn.mca, select = "cos2 16", cex = .7, autoLab = "yes", xlim=c(0.75,2.5), ylim = c(-.2,.2))
+```
+We have excluded some of the variables and individuals whose contributions are small. We first notice the clutter of red variables.  The variables include InternetService_No, StreamingMovies_DNA (does not apply), and other DNA's for additional features.  The extreme closeness suggests these variables are highly correlated, which makes sense because these additional features do not apply if a customer does not subscribe to internet service, as we can see in the table below.  
+
+```{r}
+table(churn$InternetService, churn$StreamingMovies)
+```
+
+The plot below shows the third quadrant.  Although it is difficult to discern, the Churn_Yes coordinate lies around $(-0.3, -0.55)$.  
+
+```{r}
+plot(churn.mca, select = "cos2 10", cex = .7, autoLab = "yes", xlim=c(-.6,-.4), ylim = c(-.8,-.3))
+```
+The above plot shows that churn is closely related to customers who are on month-to-month contracts, have no phone service with the company, pay using electronic checks, and opt for no additional features to their account such as device protection or streaming movies.  The closeness of Fiber optic (top) suggests, as we have already seen, that the fiber optic is a factor in churn.
+
+So far we have only looked at the first two components, which have the two highest proportions of variation.  Below is a plot of the first and third principle components.
+
+```{r}
+fviz_mca_var(churn.mca, axes = c(1,3), repel=TRUE, select.var = list(contrib = 25))
+```
+The third principle component (vertical axis) breaks up the types of services.  Positive values indicate no phone service and using DSL.  
+
+But how many principle components should we use?  We can create a scree plot which shows each principle component's eigenvalue or contribution to the total inertia. 
+
+```{r}
+churn.mca$eig
+sum(churn.mca$eig[,2][1:20])
+barplot(churn.mca$eig[,2][1:12], main = "scree plot",  
+              ylab = "percent of total variance", 
+              xlab = "first 12 principle inertia", col = "dodgerblue")
+```
+We are looking for a big drop before the chart tapers off.  This happens between the third and fourth components.  We can also see this below using the cumulative percent of variation.  Here we are looking for a bend in the plot where it begins to straighten out, which again occurs between the third and fourth component.  We also note that the first three components account for nearly 47% of the variation.
+
+```{r}
+plot(churn.mca$eig[,3][1:19], ylab = "cumulative percent of total inertia", 
+            xlab = "first 19 principle components", col = "dodgerblue", ylim =c(28,103))
+lines(1:19,churn.mca$eig[,3][1:19], lwd = .7, col = "dodger blue")
+```
+One should concentrate on these first three principle components, where each component is a linear combination of all the variables.  We will later be using hierarchical clustering on the first three components to create groups of individuals. We can see the components of each of the three components in descending importance.
+```{r}
+dimdesc(churn.mca)
+```
+If we look at the `$`Dim _`$category` for each of the three principle components, we see the factors responsible for each of the dimensions in descending order in terms of the p-value.  Customers with high scores on the first principle component keep monthly charges low by not using additional services, and/or having phone only services.  Additionally, they are more likely to not to use paperless billing and pay via mailed checks.  Customers with positive values on the second principle components tend to pay more and subscribe to more additional services.  Customers with positive values on the third principle components tend to use DSL and have moderate monthly bills.   This supports the aforementioned graphical interpretations.
+
+We can conclude from the MCA that there is different customer profiles, mostly separated by cost.
+
+###Hierarchical Clustering###
+Next we want to use the results from the MCA to create group our customers with similar characteristics.  Then we would like to identify the clusters with the highest churn rates.  For this I will employ the HCPC (hierarchical clustering of principle components).  While most clustering require quantitative variables, HCPC uses the quantitative coordinates of the principle components from the MCA.  The goal will be to create clusters where customers within each cluster are as similar as possible and each cluster is as different as possible from the other clusters.  
+
+I prefer this visual approach over, say, a decision tree.  In a tree, the reader only see rules, often with important variables not even included in the nodes.  Thus the reader cannot examine between the variables.  In MCA plots, we will see the relationship of each variable, between each level of each variable, and between the individuals all on the same plot.
+
+I have reduced the number of principle components to 3, as previously justified, and after some analysis I settled on choosing 4 cluster (that is, 4 different customer profiles).  All variables, whether they active or supplemental, or qualitative or quantitative, as used in the construction of the clusters.
+```{r}
+churn.mca2 = MCA(churn, quali.sup = c(1,2,3,4,20), 
+            quanti.sup = c(5,18,19), ncp = 3, graph = FALSE)
+churn.hcpc = HCPC(churn.mca2, nb.clust = 4)
+```
+The first plot presents two plots.  The dendogram has each cluster of variables with their levels located in each colored box.  Unfortunately the names are illegible.  The bar graph on the top right shows the loss of inertia between the number of clusters.  The first three bars are highlighted, and we see a big drop after the fourth bar followed by a slow decrease.  This suggests that 4 clusters is a reasonable choice, as partitioning into more clusters will decrease the inertia between clusters, hence the clusters themselves will be more similar to one another.  The second plot show the results of the clusters of individuals on the MCA plot on the *x-y*-plane, and the tree dendogram stopping at the location of the variables on the MCA plane.  
+
+Here are the numeric results of the clustering.
+```{r}
+churn.hcpc$desc.var
+```
+This output begins by showing us the variables most responsible for forming the clusters in descending importance.  PhoneService, InternetService, and the additional features make up the first few variables.  As previously mentioned, these variables are highly correlated, especially the since DNA (does not apply) categories are perfectly correlated with having no internet or having no phone service.  Lengths of contracts and PaperlessBilling also have a large effect on forming clusters.  
+
+Now let's see the 4 customer profiles.
+
+Cluster 1 consists of customers who have DSL internet and no phone service. These customers tend to subscribe to a variety mixes of additional features.  100% of customers with no phone service belong to cluster 1 while 97.9885% of customers in cluster 1 have no phone service.
+
+Cluster 2 consists of customers who have FiberOptic internet, use streaming TV and movies, do not have TechSupport, and on month-to-month or one year contracts.  This cluster is most associated with churn.  60.077% of those with fiber optic internet service belong to cluster 2 and 68.7361% of those in cluster 2 use fiber optic.  More importantly for our study, 66.987% of those who churn are found in cluster 2 while  46.2675% of customers in cluster 2 have churned.
+
+Cluster 3 consists who loyal, high-valued customers.  They tend to subscribe to more additional features, have longer contracts, and longer tenure.  They tend to have partners and pay by bank transfers or credit cards.  100% of customers in cluster 3 have phone service.
+
+Cluster 4, the large separated cloud on the right side of the MCA plot, are the phone service only customers. 100% of the customers have phone service, although only 23.9899% of all those with phone service are in cluster 4.  They also tend to be more loyal customers with longer contracts.
+
+In the next chunk of code I make attach the clusters of each to a new data frame.  
+```{r}
+clust = churn.hcpc$data.clust$clust
+churn.with.clusters = cbind(churn, clust )
+head(churn.with.clusters)
+```
+In looking at the data frame, it also helps to relate the clusters to the individuals.  For example, the first customer has been classified as belonging to the first cluster.  We confirm that she does indeed have DSL internet and no phone service, like the description of the first cluster previously mentioned.
+
+Lastly we can directly look at the churn rates for each cluster. 
+```{r}
+t=table(churn.with.clusters$clust, churn.with.clusters$Churn)
+t
+prop.table(t,1)
+churn.mca.df = data.frame(cbind(churn.mca$ind$coord , Churn = as.integer(churn[ ,20])-1))
+str(churn.mca.df)
+```
+Cluster 2 has the highest churn rate, far greater than the global 26.5%.  Cluster 5 has the lowest churn rate and seem the most loyal customers.  Cluster 2 has a much higher churn rate than the global rate of 26.5%.  The other three clusters have lower rates, with cluster 4 having the lowest churn rate.
+
+
+###*Section IV:*  Predictive Model Selection###
+Here we choose between three models- one variable model, full model, and a model with a few interactions.  We will run binary logistic regression for each of the three models. I ran many different models before settling on these three to compare.  The models I ran included using both the MCA components and the four clusters as previously mentioned.  These models did perform reasonably well, but I did find that the interaction model generated the best results. 
+
+Logistic regression is used when the response variable of interest is categorical, like in our case.  Logistic regression can use either categorical (binary or multinomial) or numerical independent variables, again like in our case.  The assumptions on the distribution of independent variables in logistic regression is lighter than many other techniques.  Here we assume each variable belongs to an exponential family (Gaussian, exponential, Poisson, to name a few), which we will be assuming for our subsequent models.  However, interpreting these more complex logistic model is more difficult, but in our case each model will ultimately predict the probability of each customer of churning.  We will use those probabilities and choose a cutoff value to determine whether a given customer is classified as a "churn" or not.  The untransformed y-variable logistic regression is called "logit," or log-odds, and the general equation is written in the form:
+
+$log\frac{p}{(1-p)} = \beta_{0} + \beta_{1}X_{1} + \dots + \beta_{k}X_{k} $, where $log()$ is the natural logarithm.
+
+First we partition the data into 70% training data ans 30% testing data.  We use `set.seed()` for reproducibility.
+```{r}
+set.seed(3.141592)
+s = sample(1:nrow(churn),size = round(.7*nrow(churn)))
+churn.train = churn[s,]
+churn.test = churn[-s,]
+churn.with.clusters.train = churn.with.clusters[s, ]
+churn.with.clusters.test = churn.with.clusters[-s, ]
+churn.mca.df.train = churn.mca.df[s, ]
+churn.mca.df.test = churn.mca.df[-s, ]
+```
+
+My first model (model 1) will consist of the InternetService and its three levels.
+
+```{r}
+churn1.glm = glm(Churn~InternetService, family = binomial(link = logit), data = churn.train)
+contrasts(churn$InternetService)
+summary(churn1.glm)
+```
+I will be using the AIC (Alaike Information Criteria) to determine the best model.  Although the number is difficult to interpret, the lower the AIC, the better the model assuming one model is nested in the other.  Model 1 has an AIC of 5165.3.
+
+Although the output of the coefficients is difficult to read directly, it does tell us that there is internet service type does have a significance effect on the churn rate.  However, this model is not very useful in prediction, since it would merely use the conditional probabilities to predict a customer's probability of leaving.  
+
+```{r}
+c5 = table(churn.train$InternetService, churn.train$Churn)
+c6 = round(prop.table(c3,1)*100,2)
+c5
+c6
+```
+
+We can also see some different pseudo $r^2$ values.  It should be noted that in logistic regression there is no true $r^2$ like the one we find in linear regression using ordinary least squares.  However, these values are still useful when comparing models.
+
+```{r}
+PseudoR2(churn1.glm, which = c( "McFadden", "McFaddenAdj", "Nagelkerke", "CoxSnell"))
+```
+
+Now let's try the next model.  Model 2 will be the full model, without interaction effects.  
+
+```{r}
+churn2.glm = glm(Churn~., family = binomial(link = logit), data = churn.train)
+summary(churn2.glm)
+```
+The first thing of note is that the AIC of 4117.7 has reduced drastically from the first model, suggesting this model is better.  The next we notice is the list of variables, including their p-values.  Typically, we can reduce the model by eliminating variables that are not significant.  The variables gender, Partner, PhoneService, OnlineBackup, and TechSupport are not significant at a 5% level.  
+
+Looking at the $r^2$ values, we see a vast improvement over the last model.
+
+```{r}
+PseudoR2(churn2.glm, which = c( "McFadden", "McFaddenAdj", "Nagelkerke", "CoxSnell"))
+```
+
+Next we see how well the model can predict our test data.  The code below is my way of being able to change the model and data set to test different models.  I will use the model to predict the probability of each individual in the training data set.  As of now, I will use a 50% cutoff level to classify whether each customer is a "churn" or not.  We then create a confusion matrix and calculate the misclassification rate. 
+
+```{r}
+churn.glm = churn2.glm ####set it and forget it
+train.data = churn.train####set it and forget it
+test.data = churn.test####set it and forget it
+pred = predict(churn.glm, test.data, type = "response")
+pred.train = predict(churn.glm, train.data, type = "response")
+head(pred.train) ##some of the predicitions
+Classified_Churn.test = ifelse(pred > .5, "1","0")
+Classified_Churn.train = ifelse(pred.train > .5, "1","0")
+pred_churn.test = cbind(churn.test, pred, Classified_Churn.test)
+pred_churn.train = cbind(churn.train, pred.train, Classified_Churn.train)
+pred.train = predict(churn.glm, train.data, type = "response")
+Classified_Churn.test = ifelse(pred > .5, "1","0")
+Classified_Churn.train = ifelse(pred.train > .5, "1","0")
+pred_churn.test = cbind(churn.test, pred, Classified_Churn.test)
+pred_churn.train = cbind(churn.train, pred.train, Classified_Churn.train)
+#head(pred_churn.test)
+conf.matrix.train = xtabs(~Churn + Classified_Churn.train, data = pred_churn.train )
+conf.matrix.train
+print(noquote(c("misclassification error is", 1-sum(diag(conf.matrix.train)/sum(conf.matrix.train)))))
+pred3 = prediction(pred, test.data$Churn)
+roc1 = performance(pred3, "tpr","fpr")#####
+roc = roc1####
+auc = performance(pred3, "auc")
+auc = unlist(slot(auc, "y.values"[[1]])[1])
+auc = round(auc, 4)
+auc1 = auc####
+```
+Beside the overall error rate, it is advantage for the company to consider the specificity, or rate of correctly classified churned customers of all those who did churn. For example, we correctly predicted 750 of the 750 + 572 = 1322 customers who did churn. The model missed 572 customers at a rate of 43.3%.
+```{r}
+false_pos.train = conf.matrix.train[2,1]/rowSums(conf.matrix.train)[2]
+false_pos.train
+```
+
+We will repeat this process for the testing data to see how well the model performs on data which it has not seen before.
+ 
+```{r}
+conf.matrix.test = xtabs(~Churn + Classified_Churn.test, data = pred_churn.test )
+conf.matrix.test
+false_pos.test = conf.matrix.test[2,1]/rowSums(conf.matrix.test)[2]
+print(noquote(c("misclassification error is", 1-sum(diag(conf.matrix.test)/sum(conf.matrix.test)))))
+false_pos.test = conf.matrix.test[2,1]/rowSums(conf.matrix.test)[2]
+false_pos.test
+pred3 = prediction(pred, test.data$Churn)
+roc2 = performance(pred3, "tpr","fpr")#####
+roc = roc2####
+auc = performance(pred3, "auc")
+auc = unlist(slot(auc, "y.values"[[1]])[1])
+auc = round(auc, 4)
+auc2 = auc####
+```
+The test data closely matches the training data, suggesting this is a good model.
+
+I am saving this model to create an ROC curve in the next section.
+```{r}
+pred3 = prediction(pred, test.data$Churn)
+roc2 = performance(pred3, "tpr","fpr")#####
+roc = roc2####
+auc = performance(pred3, "auc")
+auc = unlist(slot(auc, "y.values"[[1]])[1])
+auc = round(auc, 4)
+auc = auc2####
+```
+
+After this model, I tried many different models trying to improve the misclassification rate of 19.56% testing and 19.31% training.  One typical strategy would be dropping insignificant variable, such as gender, and rerunning the model.  However, every model I tried behaved more poorly when I removed gender.  Although the MCA before also found little influence of gender, there could be an interaction effect with another variable that influences the logistic regression in some way.
+
+For the last model, I will run logistic regression on the MCA components.  I first ran all the variables and reduced to the significant dimensions.
+
+```{r}
+churn3.glm = glm(Churn~ Dim.1 + Dim.2 + Dim.4 + Dim.15 + Dim.16, family = binomial(link = logit), data = churn.mca.df.train)
+churn.glm = churn3.glm ####set it and forget it
+train.data = churn.mca.df.train####set it and forget it
+test.data = churn.mca.df.test####set it and forget it
+summary(churn.glm)
+```
+The AIC of 4314.2 is not quite as good as the 4117.7 from the previous model.
+
+```{r}
+pred = predict(churn.glm, test.data, type = "response")
+pred.train = predict(churn.glm, train.data, type = "response")
+#head(pred)
+Classified_Churn.test = ifelse(pred > .5, "1","0")
+Classified_Churn.train = ifelse(pred.train > .5, "1","0")
+pred_churn.test = cbind(churn.test, pred, Classified_Churn.test)
+pred_churn.train = cbind(churn.train, pred.train, Classified_Churn.train)
+pred_all = predict(churn.glm, churn.mca.df, type = "response")#####
+#head(pred_churn.test)
+conf.matrix.train = xtabs(~Churn + Classified_Churn.train, data = pred_churn.train )
+conf.matrix.train
+print(noquote(c("misclassification error is", 1-sum(diag(conf.matrix.train)/sum(conf.matrix.train)))))
+false_pos.train = conf.matrix.train[2,1]/rowSums(conf.matrix.train)[2]
+false_pos.train
+conf.matrix.test = xtabs(~Churn + Classified_Churn.test, data = pred_churn.test )
+conf.matrix.test
+1-sum(diag(conf.matrix.test))/sum(conf.matrix.test)
+false_pos.test = conf.matrix.test[2,1]/rowSums(conf.matrix.test)[2]
+print(noquote(c("misclassification error is", 1-sum(diag(conf.matrix.test)/sum(conf.matrix.test)))))
+false_pos.test = conf.matrix.test[2,1]/rowSums(conf.matrix.test)[2]
+false_pos.test
+pred3 = prediction(pred, test.data$Churn)
+roc3 = performance(pred3, "tpr","fpr")#####
+roc = roc3####
+auc = performance(pred3, "auc")
+auc = unlist(slot(auc, "y.values"[[1]])[1])
+auc = round(auc, 4)
+auc3 = auc####
+```
+The misclassification rates, 21.5% and 22.1%, are much higher than the previous model.
+
+###Model Performance###
+We can plot all three models on a ROC curve, using the `ROCR` package.
+
+```{r}
+plot(roc1, main ="ROC Curve", xlab = "1 - Specificity", ylab = "Sensitivity", col ="darkblue")
+abline(a=0,b=1, lty = 2)
+legend(.8,.25, c(auc1,auc2,auc3), title= "AUC", cex = .6, fill=c("darkblue","green","red"))
+
+###Adding curves#######
+plot(roc2, add = T, col = "green")
+plot(roc3, add = T, col = "red")
+plot(roc2, add = T, col = "green")
+#plot(roc5, add = T, col = "darksalmon")
+legend(.8,.65, fill = c("darkblue","green", "red"), c("mod_1","mod_2" ,"mod_3"), cex = .7)
+```
+Using this chart, we can judge which model provides the better overall performance. The horizontal axis represent the proportion of misclassified churned customers while the vertical axis represents the sensitivity, or proportion of not churned customers who are incorrectly labeled as churned. These values depend upon the cutoff level used in predicting each individual based on their probabilities of churn (currently we are using 0.5 as the cutoff, but that will change). We are looking for the curve with the most area under the curve (AUC) and the one that rises the quickest.  Clearly model 2 performs better than the other two models, with an area under the curve of 0.841, greater than the other two models.  
+
+To interpret the plot, let's examine a point on the from the second model, say (0.2,0..75).  This means that the second model would miss about 20% of those who churned but would correctly classify about 75% of those who did not churn at the given cutoff value.  Now that we are selecting the second model to predict churn, let's add the the differing cutoff levels.
+
+```{r}
+plot(roc2, colorize = TRUE, main ="ROC Curve", xlab = "1 - Specificity", ylab = "Sensitivity")
+legend(.7,.2, auc2, title= "AUC", cex = .75)
+```
+The color of the curve includes the different cutoff values. For instance, the (0.2,0..75) corresponds to the color green (towards the light blue end) on the spectrum, which corresponds to a cutoff value of roughly 33%.  We can try to find the cutoff value that reduces the error as much as possible (which I have done and can reduce the misclassification rates as low as 19.2% 19.3% for the testing and training data respectively), or try to find the cutoff value that misses as few churned customers while not over classifying too many customers.
+
+Because the company should want to favor identifying the potential churned customers over correctly identifying those who do not churn, we want to choose a cutoff value that corresponds to a bump or sharp turn on the ROC chart.  The best point for this is approximately (0.22,0.75), which corresponds to a cut off value of 31% (which I found manually).
+
+So our model will use the predict a customer's probability of churning based on the values of the 20 variables.  If the customer has a 31% chance or greater of churning, they will be predicted as churning.  
+
+```{r}
+cutoff = .31
+Classified_Churn = ifelse(pred > cutoff, "1","0")
+Classified_Churn.train = ifelse(pred.train > cutoff, "1","0")
+Classified_Churn_all = ifelse(pred_all > cutoff, "1","0")
+pred_churn.test = cbind(test.data, pred, Classified_Churn)
+pred_churn.train = cbind(train.data, pred.train, Classified_Churn.train)
+#head(pred_churn.test)
+conf.matrix.train = xtabs(~Churn + Classified_Churn.train, data = pred_churn.train )
+conf.matrix.train
+print(noquote(c("misclassification error is", 1-sum(diag(conf.matrix.train)/sum(conf.matrix.train)))))
+false_pos.train = conf.matrix.train[2,1]/rowSums(conf.matrix.train)[2]
+false_pos.train
+conf.matrix = xtabs(~Churn + Classified_Churn, data = pred_churn.test )
+conf.matrix
+1-sum(diag(conf.matrix))/sum(conf.matrix)
+false_pos.test = conf.matrix[2,1]/rowSums(conf.matrix)[2]
+print(noquote(c("false positive rate", false_pos.test)))
+```
+So using a cutoff of 31% we have correctly classified 418 customers as churned in our testing data, much better than the 305 previously classified customers using a 50% level.  We only misclassify 23.6% of the churned customers.  We do, however, over classify 377/(377+418) = 47.4% of customers as churned who were not churned.  Because of this, our classifications error is increased 23.3% but it is a worthy trade off.
+
+###Summary###
+We have cleaned the data set, used descriptive techniques to cluster customers, and found a model to predict the churn of customers.  We conclude by writing one more data set which includes the the original data, the cluster of each customer that we classified them to, the predicted churn using the logistic regression model, and the coordinates of the dimension using MCA.
+
+```{r}
+final_set = cbind(churn, clust, pred_all, Classified_Churn_all,churn.mca.df[, -20])
+write.csv(final_set ,"C744_FInal_Data_Set.csv")
+```
+
